@@ -1,0 +1,20 @@
+# OS generated files
+Thumbs.db
+Thumbs.db:encryptable
+ehthumbs.db
+Log.txt
+*.log
+.DS_Store
+
+# Scraper generated data exports
+*.xlsx
+*.csv
+
+# IDE / Editor configurations
+.vscode/
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
