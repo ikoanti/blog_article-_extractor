@@ -2,8 +2,8 @@
  * Premium Browser-Based Blog Article Scraper & Exporter
  * 
  * Instructions:
- * 1. Open the blog landing page of any website (e.g. https://example.com/blog).
- * 2. Open Developer Tools (F12, or Right Click -> Inspect).
+ * 1. Open the blog landing page of any website (e.g., https://example.com/blog).
+ * 2. Open Developer Tools (F12, or right-click -> Inspect).
  * 3. Go to the "Console" tab.
  * 4. Paste this entire script and press Enter.
  * 5. Use the floating overlay dashboard to test selectors, crawl pages, and download the data to Excel/CSV.
@@ -1159,6 +1159,36 @@
 
       progressBar.style.width = `${Math.min(25 + pageCounter * 15, 95)}%`;
 
+      // Helper function to auto-increment numeric page URLs (query parameter or path)
+      function incrementPageUrl(url) {
+        try {
+          const urlObj = new URL(url);
+          // Check query parameters (pg, page, p, paged)
+          const pageKeys = ['pg', 'page', 'p', 'paged'];
+          for (const key of pageKeys) {
+            if (urlObj.searchParams.has(key)) {
+              const val = parseInt(urlObj.searchParams.get(key));
+              if (!isNaN(val)) {
+                urlObj.searchParams.set(key, val + 1);
+                return urlObj.href;
+              }
+            }
+          }
+          // Check path patterns (e.g. /page/2/ or /page/2)
+          const path = urlObj.pathname;
+          const pagePathRegex = /(\/page\/)(\d+)(\/?)$/i;
+          const match = path.match(pagePathRegex);
+          if (match) {
+            const nextVal = parseInt(match[2]) + 1;
+            urlObj.pathname = path.replace(pagePathRegex, `$1${nextVal}$3`);
+            return urlObj.href;
+          }
+          return null;
+        } catch (_) {
+          return null;
+        }
+      }
+
       const nextPage = findNextPageUrl(docToParse, currentPageUrl);
       if (nextPage) {
         currentPageUrl = nextPage;
@@ -1167,8 +1197,18 @@
           await new Promise(resolve => setTimeout(resolve, sleepDelay));
         }
       } else {
-        log('No pagination links / Next page found. Reached end of crawl.', 'info');
-        currentPageUrl = null;
+        const incrementedUrl = incrementPageUrl(currentPageUrl);
+        if (incrementedUrl) {
+          log(`Next button not found in raw HTML. Attempting URL auto-increment fallback: ${incrementedUrl}`, 'info');
+          currentPageUrl = incrementedUrl;
+          pageCounter++;
+          if (isCrawling) {
+            await new Promise(resolve => setTimeout(resolve, sleepDelay));
+          }
+        } else {
+          log('No pagination links / Next page found. Reached end of crawl.', 'info');
+          currentPageUrl = null;
+        }
       }
     }
 
