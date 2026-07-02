@@ -1,5 +1,5 @@
 /**
- * Premium Browser-Based Blog Article Scraper & Exporter
+ * Premium Browser-Based Blog Article Scraper & Exporter (Fixed & Enhanced Version)
  * 
  * Instructions:
  * 1. Open the blog landing page of any website (e.g., https://example.com/blog).
@@ -351,7 +351,7 @@
       white-space: nowrap;
       overflow: hidden;
       text-overflow: ellipsis;
-      max-width: 140px;
+      max-width: 100px;
     }
 
     .scraper-preview-table tr:hover td {
@@ -377,7 +377,7 @@
     <div class="scraper-header" id="scraper-drag-handle">
       <div class="scraper-brand">
         <span class="scraper-title">⚡ Blog Article Extractor</span>
-        <span class="scraper-subtitle">Engine v1.0.0</span>
+        <span class="scraper-subtitle">Engine v1.4.0</span>
       </div>
       <button class="scraper-close-btn" id="scraper-close" title="Close Panel">×</button>
     </div>
@@ -403,8 +403,25 @@
         </div>
 
         <div class="scraper-field">
-          <label class="scraper-label" for="sel-next">Next Page Link Selector (Global)</label>
-          <input class="scraper-input" id="sel-next" type="text" placeholder="e.g. a.next, [rel='next']" value="">
+          <label class="scraper-label" for="sel-date">Date CSS Selector (Relative)</label>
+          <input class="scraper-input" id="sel-date" type="text" placeholder="e.g. time, .date, .post-date" value="">
+        </div>
+
+        <div class="scraper-field">
+          <label class="scraper-label" for="sel-author">Author CSS Selector (Relative)</label>
+          <input class="scraper-input" id="sel-author" type="text" placeholder="e.g. .author, .post-author" value="">
+        </div>
+
+        <div class="scraper-field">
+          <label class="scraper-label" for="sel-next">Next Page / Load More Selector</label>
+          <input class="scraper-input" id="sel-next" type="text" placeholder="e.g. a.next, .elementor-button, .load-more" value="">
+        </div>
+
+        <div class="scraper-field" style="flex-direction: row; align-items: center; gap: 8px; margin-bottom: 12px; margin-top: 4px;">
+          <input type="checkbox" id="chk-deep-scrape" checked style="width: 16px; height: 16px; cursor: pointer; margin: 0;">
+          <label class="scraper-label" for="chk-deep-scrape" style="cursor: pointer; user-select: none;">
+            🔍 Deep Scrape (Resolves missing Dates/Authors from details pages)
+          </label>
         </div>
 
         <div class="scraper-delay-row">
@@ -457,6 +474,7 @@
                 <th>Title</th>
                 <th>URL</th>
                 <th>Date</th>
+                <th>Author</th>
               </tr>
             </thead>
             <tbody id="preview-tbody">
@@ -479,6 +497,8 @@
   const elArticle = document.getElementById('sel-article');
   const elTitle = document.getElementById('sel-title');
   const elLink = document.getElementById('sel-link');
+  const elDate = document.getElementById('sel-date');
+  const elAuthor = document.getElementById('sel-author');
   const elNext = document.getElementById('sel-next');
   const elDelay = document.getElementById('val-delay');
   const btnDetect = document.getElementById('btn-detect');
@@ -495,6 +515,7 @@
   const previewCount = document.getElementById('preview-count');
   const previewTbody = document.getElementById('preview-tbody');
   const closeBtn = document.getElementById('scraper-close');
+  const chkDeepScrape = document.getElementById('chk-deep-scrape');
 
   // Crawler State
   let isCrawling = false;
@@ -600,7 +621,9 @@
       'a[aria-label*="Next"]', 
       '.next a', 
       '.next-page',
-      'a.next'
+      'a.next',
+      '.e-load-more-anchor',
+      '.elementor-button'
     ]
   };
 
@@ -671,6 +694,15 @@
     return false;
   }
 
+  // Helper to ensure next-page links are not nested inside article items (like "Read More" card buttons)
+  function isInsideArticle(el, articleSel) {
+    if (!articleSel) return false;
+    try {
+      return el.closest(articleSel) !== null;
+    } catch (_) {
+      return false;
+    }
+  }
 
   // Heuristic to check if element has header content
   function hasHeading(el) {
@@ -681,6 +713,44 @@
       if (a.textContent.trim().length > 15) return true;
     }
     return false;
+  }
+
+  // Helper to resolve URLs from elements (standard links, load-more AJAX anchors, data-next attributes)
+  function getAttributeUrl(el, baseUrl) {
+    if (!el) return null;
+    const attributes = ['href', 'data-next-page', 'data-next-link', 'data-href', 'data-url', 'data-next', 'action'];
+    for (const attr of attributes) {
+      const val = el.getAttribute(attr);
+      if (val && val.trim() && !val.startsWith('#') && !val.startsWith('javascript:')) {
+        try {
+          return new URL(val, baseUrl).href;
+        } catch (_) {
+          return val;
+        }
+      }
+    }
+    return null;
+  }
+
+  // Helper to scan parent/sibling elements for load more metadata URLs
+  function checkSurroundingForUrl(el, baseUrl) {
+    if (!el) return null;
+    // 1. Check parent element
+    if (el.parentElement) {
+      const url = getAttributeUrl(el.parentElement, baseUrl);
+      if (url) return url;
+    }
+    // 2. Check sibling elements (like .e-load-more-anchor sitting next to button)
+    if (el.parentElement) {
+      const siblings = el.parentElement.children;
+      for (const sib of siblings) {
+        if (sib !== el) {
+          const url = getAttributeUrl(sib, baseUrl);
+          if (url) return url;
+        }
+      }
+    }
+    return null;
   }
 
   // Automatic repeater and selector search
@@ -852,40 +922,183 @@
     elLink.value = bestLinkSelector;
     log(`Detected Relative Link: "${bestLinkSelector || 'Same as Title element'}"`, 'info');
 
+    // Detect Date Selector
+    let bestDateSelector = '';
+    if (detectedLeaves.length > 0) {
+      const dateCandidates = [
+        'time',
+        '[datetime]',
+        '.date',
+        '.post-date',
+        '.published',
+        '.entry-date',
+        '.created-at',
+        '.meta-date',
+        '.timestamp'
+      ];
+      let bestFreq = 0;
+      for (const dSel of dateCandidates) {
+        let freq = 0;
+        detectedLeaves.forEach(el => {
+          if (el.querySelector(dSel)) freq++;
+        });
+        if (freq > bestFreq && freq >= detectedLeaves.length * 0.4) {
+          bestFreq = freq;
+          bestDateSelector = dSel;
+        }
+      }
+
+      if (!bestDateSelector) {
+        const classFreq = {};
+        detectedLeaves.forEach(el => {
+          el.querySelectorAll('*').forEach(child => {
+            if (child.className && typeof child.className === 'string') {
+              const classes = child.className.split(/\s+/).filter(Boolean);
+              classes.forEach(c => {
+                const cLower = c.toLowerCase();
+                if (cLower.includes('date') || cLower.includes('time') || cLower.includes('published')) {
+                  classFreq['.' + c] = (classFreq['.' + c] || 0) + 1;
+                }
+              });
+            }
+          });
+        });
+        let maxClassFreq = 0;
+        let bestClass = '';
+        for (const [cls, freq] of Object.entries(classFreq)) {
+          if (freq > maxClassFreq) {
+            maxClassFreq = freq;
+            bestClass = cls;
+          }
+        }
+        if (maxClassFreq >= detectedLeaves.length * 0.4) {
+          bestDateSelector = bestClass;
+        }
+      }
+    }
+    elDate.value = bestDateSelector;
+    if (bestDateSelector) {
+      log(`Detected Relative Date: "${bestDateSelector}"`, 'info');
+    } else {
+      log(`Date Selector unresolved (using fallback rules)`, 'warn');
+    }
+
+    // Detect Author Selector
+    let bestAuthorSelector = '';
+    if (detectedLeaves.length > 0) {
+      const authorCandidates = [
+        '.author',
+        '.post-author',
+        '[itemprop="author"]',
+        '.byline',
+        '.author-link',
+        '.entry-author',
+        '.writer'
+      ];
+      let bestFreq = 0;
+      for (const aSel of authorCandidates) {
+        let freq = 0;
+        detectedLeaves.forEach(el => {
+          if (el.querySelector(aSel)) freq++;
+        });
+        if (freq > bestFreq && freq >= detectedLeaves.length * 0.4) {
+          bestFreq = freq;
+          bestAuthorSelector = aSel;
+        }
+      }
+
+      if (!bestAuthorSelector) {
+        const classFreq = {};
+        detectedLeaves.forEach(el => {
+          el.querySelectorAll('*').forEach(child => {
+            if (child.className && typeof child.className === 'string') {
+              const classes = child.className.split(/\s+/).filter(Boolean);
+              classes.forEach(c => {
+                const cLower = c.toLowerCase();
+                if (cLower.includes('author') || cLower.includes('byline') || cLower.includes('writer')) {
+                  classFreq['.' + c] = (classFreq['.' + c] || 0) + 1;
+                }
+              });
+            }
+          });
+        });
+        let maxClassFreq = 0;
+        let bestClass = '';
+        for (const [cls, freq] of Object.entries(classFreq)) {
+          if (freq > maxClassFreq) {
+            maxClassFreq = freq;
+            bestClass = cls;
+          }
+        }
+        if (maxClassFreq >= detectedLeaves.length * 0.4) {
+          bestAuthorSelector = bestClass;
+        }
+      }
+    }
+    elAuthor.value = bestAuthorSelector;
+    if (bestAuthorSelector) {
+      log(`Detected Relative Author: "${bestAuthorSelector}"`, 'info');
+    } else {
+      log(`Author Selector unresolved (using fallback rules)`, 'warn');
+    }
+
     // Detect Next Page Selector
     let bestNextSelector = 'a[rel="next"]';
     let foundNext = false;
-    for (const selector of SELECTOR_TEMPLATES.next) {
-      if (selector.includes(':has-text')) {
-        const textToFind = selector.match(/"([^"]+)"/)[1];
-        const allAnchors = doc.querySelectorAll('a[href]');
-        for (const a of allAnchors) {
-          if (isInsideUtilityContainer(a, true)) continue;
-          const cleanText = a.textContent.trim().toLowerCase();
-          if (cleanText.includes(textToFind.toLowerCase())) {
-            bestNextSelector = `a[href] (Contains text "${textToFind}")`;
-            foundNext = true;
-            break;
+    
+    // Core Elementor Load More check
+    const elementorAnchor = doc.querySelector('.e-load-more-anchor');
+    if (elementorAnchor) {
+      bestNextSelector = '.e-load-more-anchor';
+      foundNext = true;
+    }
+
+    const articleSel = bestArticleSelector;
+
+    if (!foundNext) {
+      for (const selector of SELECTOR_TEMPLATES.next) {
+        if (selector.includes(':has-text')) {
+          const textToFind = selector.match(/"([^"]+)"/)[1].toLowerCase();
+          const candidates = doc.querySelectorAll('a, button, .elementor-button, [role="button"]');
+          for (const el of candidates) {
+            if (isInsideUtilityContainer(el, true)) continue;
+            if (isInsideArticle(el, articleSel)) continue; // Filter out "Read More" buttons
+            const cleanText = el.textContent.trim().toLowerCase();
+            if (cleanText.includes(textToFind)) {
+              const url = getAttributeUrl(el, window.location.href) || checkSurroundingForUrl(el, window.location.href);
+              if (url) {
+                if (el.className) {
+                  bestNextSelector = '.' + el.className.split(/\s+/).filter(Boolean).join('.');
+                } else {
+                  bestNextSelector = `${el.tagName.toLowerCase()} (Contains text "${textToFind}")`;
+                }
+                foundNext = true;
+                break;
+              }
+            }
+          }
+        } else {
+          const nextElements = doc.querySelectorAll(selector);
+          for (const nextEl of nextElements) {
+            if (isInsideUtilityContainer(nextEl, true)) continue;
+            if (isInsideArticle(nextEl, articleSel)) continue; // Filter out "Read More" buttons
+            const url = getAttributeUrl(nextEl, window.location.href) || checkSurroundingForUrl(nextEl, window.location.href);
+            if (url) {
+              bestNextSelector = selector;
+              foundNext = true;
+              break;
+            }
           }
         }
-      } else {
-        const nextElements = doc.querySelectorAll(selector);
-        for (const nextEl of nextElements) {
-          if (isInsideUtilityContainer(nextEl, true)) continue;
-          if (nextEl && nextEl.getAttribute('href')) {
-            bestNextSelector = selector;
-            foundNext = true;
-            break;
-          }
-        }
+        if (foundNext) break;
       }
-      if (foundNext) break;
     }
 
     if (!foundNext) {
-      const allLinks = doc.querySelectorAll('a[href]');
+      const allLinks = doc.querySelectorAll('a, button, [role="button"]');
       for (const a of allLinks) {
         if (isInsideUtilityContainer(a, true)) continue;
+        if (isInsideArticle(a, articleSel)) continue; // Filter out "Read More" buttons
         const txt = a.textContent.trim().toLowerCase();
         if (
           txt === 'next' || 
@@ -902,23 +1115,25 @@
           txt.includes('older entries') ||
           txt.includes('load more posts')
         ) {
-          if (a.className) {
-            bestNextSelector = 'a.' + a.className.split(/\s+/).filter(Boolean).join('.');
-          } else {
-            bestNextSelector = `a[href] (Text matches "${a.textContent.trim()}")`;
+          const url = getAttributeUrl(a, window.location.href) || checkSurroundingForUrl(a, window.location.href);
+          if (url) {
+            if (a.className) {
+              bestNextSelector = 'a.' + a.className.split(/\s+/).filter(Boolean).join('.');
+            } else {
+              bestNextSelector = `a (Text matches "${a.textContent.trim()}")`;
+            }
+            foundNext = true;
+            break;
           }
-          foundNext = true;
-          break;
         }
       }
     }
 
-
     elNext.value = bestNextSelector;
     if (foundNext) {
-      log(`Detected Global Next Button: "${bestNextSelector}"`, 'info');
+      log(`Detected Next / Load More: "${bestNextSelector}"`, 'info');
     } else {
-      log(`Next Button Selector is unresolved. Defaulting to: "a[rel='next']"`, 'warn');
+      log(`Next/Load More Selector is unresolved. Defaulting to: "a[rel='next']"`, 'warn');
     }
   }
 
@@ -927,12 +1142,132 @@
   btnDetect.addEventListener('click', () => runAutoDetect());
 
   // ----------------------------------------------------
+  // DEEP METADATA EXTRACTION FROM ARTICLE PAGES
+  // ----------------------------------------------------
+  async function extractDetailsFromArticlePage(url) {
+    try {
+      const response = await fetch(url);
+      if (!response.ok) return { date: null, author: null };
+      const htmlText = await response.text();
+      const parser = new DOMParser();
+      const doc = parser.parseFromString(htmlText, 'text/html');
+
+      let date = null;
+      let author = null;
+
+      // 1. Try to parse JSON-LD
+      const jsonLdScripts = doc.querySelectorAll('script[type="application/ld+json"]');
+      for (const script of jsonLdScripts) {
+        try {
+          const data = JSON.parse(script.textContent);
+          
+          function searchJsonLd(obj) {
+            if (!obj || typeof obj !== 'object') return;
+            
+            // Check for date
+            if (obj.datePublished && !date) date = obj.datePublished;
+            if (obj.dateCreated && !date) date = obj.dateCreated;
+            
+            // Check for author
+            if (obj.author) {
+              if (typeof obj.author === 'string' && !author) {
+                author = obj.author;
+              } else if (Array.isArray(obj.author)) {
+                const firstAuthor = obj.author[0];
+                if (firstAuthor && typeof firstAuthor === 'object' && firstAuthor.name && !author) {
+                  author = firstAuthor.name;
+                } else if (typeof firstAuthor === 'string' && !author) {
+                  author = firstAuthor;
+                }
+              } else if (typeof obj.author === 'object' && obj.author.name && !author) {
+                author = obj.author.name;
+              }
+            }
+            
+            // Recurse arrays or nested objects
+            if (Array.isArray(obj)) {
+              obj.forEach(searchJsonLd);
+            } else {
+              for (const key in obj) {
+                if (obj.hasOwnProperty(key)) {
+                  searchJsonLd(obj[key]);
+                }
+              }
+            }
+          }
+
+          searchJsonLd(data);
+        } catch (_) {}
+      }
+
+      // 2. Try standard <meta> tags
+      if (!date) {
+        const metaDate = doc.querySelector(
+          'meta[property="article:published_time"], ' +
+          'meta[name="article:published_time"], ' +
+          'meta[property="og:article:published_time"], ' +
+          'meta[name="publication_date"], ' +
+          'meta[name="pubdate"], ' +
+          'meta[name="date"], ' +
+          'meta[property="books:release_date"]'
+        );
+        if (metaDate) {
+          date = metaDate.getAttribute('content');
+        }
+      }
+
+      if (!author) {
+        const metaAuthor = doc.querySelector(
+          'meta[name="author"], ' +
+          'meta[property="article:author"], ' +
+          'meta[name="twitter:creator"], ' +
+          'meta[property="og:article:author"]'
+        );
+        if (metaAuthor) {
+          author = metaAuthor.getAttribute('content');
+        }
+      }
+
+      // 3. Fallback to basic DOM elements in the details page
+      if (!date) {
+        const detailDateEl = doc.querySelector('time, [datetime], .date, .post-date, .published, .entry-date');
+        if (detailDateEl) {
+          date = detailDateEl.getAttribute('datetime') || detailDateEl.getAttribute('content') || detailDateEl.textContent.trim();
+        }
+      }
+
+      if (!author) {
+        const detailAuthorEl = doc.querySelector('.author, .post-author, [itemprop="author"], .byline, .writer');
+        if (detailAuthorEl) {
+          author = detailAuthorEl.textContent.trim().replace(/^by\s+/i, '');
+        }
+      }
+
+      // Clean up date format
+      if (date) {
+        try {
+          const parsedDate = new Date(date);
+          if (!isNaN(parsedDate.getTime())) {
+            date = parsedDate.toISOString().slice(0, 10);
+          }
+        } catch (_) {}
+      }
+
+      return { date, author };
+    } catch (_) {
+      return { date: null, author: null };
+    }
+  }
+
+  // ----------------------------------------------------
   // PARSING & CRAWLING ENGINE
   // ----------------------------------------------------
   function extractPageArticles(doc, pageIndex, baseUrl) {
     const articleSel = elArticle.value.trim();
     const titleSel = elTitle.value.trim();
     const linkSel = elLink.value.trim();
+    const dateSel = elDate.value.trim();
+    const authorSel = elAuthor.value.trim();
     
     if (!articleSel) {
       log('Error: Article selector is empty.', 'error');
@@ -945,7 +1280,6 @@
     elements.forEach(articleEl => {
       if (isInsideUtilityContainer(articleEl)) return;
       let title = '';
-
       let url = '';
       let date = '';
       let author = '';
@@ -982,14 +1316,30 @@
         }
       }
 
-      const dateEl = articleEl.querySelector('time, [datetime], .date, .post-date, .published');
-      if (dateEl) {
-        date = dateEl.getAttribute('datetime') || dateEl.textContent.trim();
+      // Extract publication date from listing container
+      if (dateSel) {
+        const dateEl = articleEl.querySelector(dateSel);
+        if (dateEl) {
+          date = dateEl.getAttribute('datetime') || dateEl.getAttribute('content') || dateEl.textContent.trim();
+        }
+      } else {
+        const dateEl = articleEl.querySelector('time, [datetime], .date, .post-date, .published');
+        if (dateEl) {
+          date = dateEl.getAttribute('datetime') || dateEl.getAttribute('content') || dateEl.textContent.trim();
+        }
       }
 
-      const authorEl = articleEl.querySelector('.author, .post-author, [itemprop="author"]');
-      if (authorEl) {
-        author = authorEl.textContent.trim().replace(/^by\s+/i, '');
+      // Extract author from listing container
+      if (authorSel) {
+        const authorEl = articleEl.querySelector(authorSel);
+        if (authorEl) {
+          author = authorEl.textContent.trim().replace(/^by\s+/i, '');
+        }
+      } else {
+        const authorEl = articleEl.querySelector('.author, .post-author, [itemprop="author"]');
+        if (authorEl) {
+          author = authorEl.textContent.trim().replace(/^by\s+/i, '');
+        }
       }
 
       if (title && url) {
@@ -1008,64 +1358,85 @@
 
   function findNextPageUrl(doc, baseUrl) {
     const nextSel = elNext.value.trim();
+    const articleSel = elArticle.value.trim();
     if (!nextSel) return null;
 
     if (nextSel.includes('(Contains text "') || nextSel.includes('(Text matches "')) {
       const textMatch = nextSel.match(/"([^"]+)"/)[1].toLowerCase();
-      const allAnchors = doc.querySelectorAll('a[href]');
-      for (const a of allAnchors) {
-        if (isInsideUtilityContainer(a, true)) continue;
-        if (a.textContent.trim().toLowerCase().includes(textMatch)) {
-          const rawHref = a.getAttribute('href');
-          try {
-            return new URL(rawHref, baseUrl).href;
-          } catch (_) {
-            return null;
-          }
+      const allElements = doc.querySelectorAll('a, button, [role="button"]');
+      for (const el of allElements) {
+        if (isInsideUtilityContainer(el, true)) continue;
+        if (isInsideArticle(el, articleSel)) continue; // Filter out card links
+        if (el.textContent.trim().toLowerCase().includes(textMatch)) {
+          const url = getAttributeUrl(el, baseUrl) || checkSurroundingForUrl(el, baseUrl);
+          if (url) return url;
         }
       }
       return null;
     }
 
+    // Try finding matching element
     const nextElements = doc.querySelectorAll(nextSel);
-    for (const nextLink of nextElements) {
-      if (isInsideUtilityContainer(nextLink, true)) continue;
-      const rawHref = nextLink.getAttribute('href');
-      if (rawHref) {
-        try {
-          return new URL(rawHref, baseUrl).href;
-        } catch (_) {
-          return null;
-        }
-      }
+    for (const nextEl of nextElements) {
+      if (isInsideUtilityContainer(nextEl, true)) continue;
+      if (isInsideArticle(nextEl, articleSel)) continue; // Filter out card links
+      const url = getAttributeUrl(nextEl, baseUrl) || checkSurroundingForUrl(nextEl, baseUrl);
+      if (url) return url;
     }
+
+    // Direct global search for WordPress/Elementor load-more anchors as fallback
+    const globalElementor = doc.querySelector('.e-load-more-anchor, [data-next-page]');
+    if (globalElementor) {
+      const url = getAttributeUrl(globalElementor, baseUrl);
+      if (url) return url;
+    }
+
     return null;
   }
 
-
   // TEST PARSE BUTTON
-  btnTest.addEventListener('click', () => {
+  btnTest.addEventListener('click', async () => {
+    btnTest.disabled = true;
+    log('Testing selector parser...', 'info');
     const testParsed = extractPageArticles(document, 1, window.location.href);
-    log(`Test Parsed current page: Found ${testParsed.length} articles.`, 'info');
     
     if (testParsed.length > 0) {
+      const deepScrape = chkDeepScrape.checked;
+      const previewItems = testParsed.slice(0, 5);
+
+      if (deepScrape) {
+        log('Deep scrape enabled. Resolving metadata (date/author) from first few detail pages...', 'info');
+        for (let i = 0; i < Math.min(3, previewItems.length); i++) {
+          const item = previewItems[i];
+          if (item.date === 'N/A' || item.author === 'N/A') {
+            log(`Fetching: "${item.title.substring(0, 30)}..."`);
+            const details = await extractDetailsFromArticlePage(item.url);
+            if (details.date && item.date === 'N/A') item.date = details.date;
+            if (details.author && item.author === 'N/A') item.author = details.author;
+          }
+        }
+      }
+
+      log(`Test Parsed current page: Found ${testParsed.length} articles.`, 'info');
       log(`Example #1: "${testParsed[0].title}" -> ${testParsed[0].url}`, 'info');
       
       previewPanel.style.display = 'flex';
       previewCount.textContent = testParsed.length;
-      previewTbody.innerHTML = testParsed.slice(0, 5).map(item => `
+      previewTbody.innerHTML = previewItems.map(item => `
         <tr>
           <td title="${item.title}">${item.title}</td>
           <td title="${item.url}"><a href="${item.url}" target="_blank" style="color: #60a5fa;">Link</a></td>
           <td title="${item.date}">${item.date}</td>
+          <td title="${item.author}">${item.author}</td>
         </tr>
       `).join('');
       if (testParsed.length > 5) {
-        previewTbody.innerHTML += `<tr><td colspan="3" style="text-align: center; color: #9ca3af; font-style: italic;">Showing top 5 preview items...</td></tr>`;
+        previewTbody.innerHTML += `<tr><td colspan="4" style="text-align: center; color: #9ca3af; font-style: italic;">Showing top 5 preview items...</td></tr>`;
       }
     } else {
       log(`No articles found with current selectors. Check class names in DevTools.`, 'warn');
     }
+    btnTest.disabled = false;
   });
 
   // START CRAWLING BUTTON
@@ -1082,10 +1453,13 @@
     elArticle.disabled = true;
     elTitle.disabled = true;
     elLink.disabled = true;
+    elDate.disabled = true;
+    elAuthor.disabled = true;
     elNext.disabled = true;
     btnDetect.disabled = true;
     btnTest.disabled = true;
     elDelay.disabled = true;
+    chkDeepScrape.disabled = true;
 
     log('==================================================');
     log('🏁 Starting blog crawler...', 'info');
@@ -1141,6 +1515,30 @@
         break;
       }
 
+      // Check if deep scraping is enabled to resolve missing fields
+      const deepScrape = chkDeepScrape.checked;
+      if (deepScrape) {
+        let deepCount = 0;
+        log(`Deep scrape active. Scanning detail pages for missing fields...`, 'info');
+        for (let i = 0; i < foundOnPage.length; i++) {
+          if (!isCrawling) break;
+          const item = foundOnPage[i];
+          
+          if (item.date === 'N/A' || item.author === 'N/A') {
+            deepCount++;
+            if (deepCount > 1) {
+              await new Promise(resolve => setTimeout(resolve, 150));
+            }
+            const details = await extractDetailsFromArticlePage(item.url);
+            if (details.date && item.date === 'N/A') item.date = details.date;
+            if (details.author && item.author === 'N/A') item.author = details.author;
+          }
+        }
+        if (deepCount > 0) {
+          log(`Inspected ${deepCount} detail pages to fill missing dates/authors.`, 'info');
+        }
+      }
+
       articlesList.push(...foundOnPage);
       
       statArticles.textContent = articlesList.length;
@@ -1151,10 +1549,11 @@
           <td title="${item.title}">${item.title}</td>
           <td title="${item.url}"><a href="${item.url}" target="_blank" style="color: #60a5fa;">Link</a></td>
           <td title="${item.date}">${item.date}</td>
+          <td title="${item.author}">${item.author}</td>
         </tr>
       `).join('');
       if (articlesList.length > 10) {
-        previewTbody.innerHTML += `<tr><td colspan="3" style="text-align: center; color: #9ca3af; font-style: italic;">...and ${articlesList.length - 10} more items above</td></tr>`;
+        previewTbody.innerHTML += `<tr><td colspan="4" style="text-align: center; color: #9ca3af; font-style: italic;">...and ${articlesList.length - 10} more items above</td></tr>`;
       }
 
       progressBar.style.width = `${Math.min(25 + pageCounter * 15, 95)}%`;
@@ -1183,7 +1582,24 @@
             urlObj.pathname = path.replace(pagePathRegex, `$1${nextVal}$3`);
             return urlObj.href;
           }
-          return null;
+
+          // Check plain numeric trailing slash paths (e.g. /blog/2/ or /blog/2)
+          const numericPathRegex = /(\/)(\d+)(\/?)$/i;
+          const numMatch = path.match(numericPathRegex);
+          if (numMatch) {
+            const nextVal = parseInt(numMatch[2]) + 1;
+            urlObj.pathname = path.replace(numericPathRegex, `$1${nextVal}$3`);
+            return urlObj.href;
+          }
+
+          // If current URL ends with slash and has no number, try appending /2/ as fallback
+          if (path.endsWith('/')) {
+            urlObj.pathname = path + '2/';
+            return urlObj.href;
+          } else {
+            urlObj.pathname = path + '/2';
+            return urlObj.href;
+          }
         } catch (_) {
           return null;
         }
@@ -1229,10 +1645,13 @@
     elArticle.disabled = false;
     elTitle.disabled = false;
     elLink.disabled = false;
+    elDate.disabled = false;
+    elAuthor.disabled = false;
     elNext.disabled = false;
     btnDetect.disabled = false;
     btnTest.disabled = false;
     elDelay.disabled = false;
+    chkDeepScrape.disabled = false;
 
     log(`✅ Crawl completed. Found a total of ${articlesList.length} articles.`, 'info');
     
@@ -1253,25 +1672,20 @@
     link.href = url;
     link.download = filename;
     
-    // Stop propagation of click to prevent tracking/routing scripts from intercepting
     link.addEventListener('click', e => {
       e.stopPropagation();
     });
     
     document.body.appendChild(link);
     
-    // Dispatch a clean MouseEvent click
     const clickEvent = new MouseEvent('click', {
       bubbles: false,
       cancelable: true
     });
     link.dispatchEvent(clickEvent);
     
-    // Remove element from DOM after a short delay, not synchronously
     setTimeout(() => {
       document.body.removeChild(link);
-      
-      // Delay revoking the ObjectURL by 15 seconds to ensure Chrome completes downloading and resolving the filename metadata
       setTimeout(() => {
         URL.revokeObjectURL(url);
       }, 15000);
@@ -1326,7 +1740,6 @@
 
       XLSX.utils.book_append_sheet(wb, ws, "Scraped Articles");
       
-      // Use XLSX.write to get array buffer
       const wbout = XLSX.write(wb, { bookType: 'xlsx', type: 'array' });
       const blob = new Blob([wbout], { type: 'application/octet-stream' });
       
